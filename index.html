@@ -116,6 +116,16 @@
   }
   .slot.booked .price{color:var(--booked);}
 
+  .slot.pending{
+    cursor:not-allowed;
+    background:#fff;
+    border-color:var(--floor-amber-light);
+    border-style:dashed;
+    color:var(--floor-amber);
+  }
+  .slot.pending .price{color:var(--floor-amber);}
+  .slot .status-label{display:block;font-size:9px;text-transform:uppercase;letter-spacing:0.04em;margin-top:1px;}
+
   .cart-bar{
     position:sticky;
     bottom:0;
@@ -264,8 +274,8 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 
 // ---- CONFIG: fill these in for your project ----
-const SUPABASE_URL = 'https://qdayzqwkxomsfsyzjhkq.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFkYXl6cXdreG9tc2ZzeXpqaGtxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2OTI1NDcsImV4cCI6MjEwMDI2ODU0N30.BZevY-oq2-tmX0b70Q_N2dt6UlYwrom6IRe5HIeOI8o';
+const SUPABASE_URL = 'https://YOUR-PROJECT.supabase.co';
+const SUPABASE_ANON_KEY = 'YOUR-ANON-KEY';
 const CREATE_BOOKING_URL = `${SUPABASE_URL}/functions/v1/create-booking`;
 const PAYMONGO_CREATE_SOURCE_URL = `${SUPABASE_URL}/functions/v1/paymongo-create-source`;
 const DAY_START_HOUR = 6;   // 6am
@@ -431,10 +441,11 @@ function priceForSlot(courtId, basePrice, hour) {
   return rule ? Number(rule.price_per_hour) : Number(basePrice);
 }
 
-function isBooked(courtId, startTime) {
-  return existingBookings.some(b =>
+function slotStatus(courtId, startTime) {
+  const match = existingBookings.find(b =>
     b.court_id === courtId && b.start_time.slice(0,5) === startTime
   );
+  return match ? match.status : null; // 'paid', 'held', or null (available)
 }
 
 function isSelected(courtId, startTime) {
@@ -452,13 +463,18 @@ function renderCourts() {
       const startTime = `${String(h).padStart(2,'0')}:00`;
       const endTime = `${String(h+1).padStart(2,'0')}:00`;
       const price = priceForSlot(court.id, court.base_price_per_hour, h);
-      const booked = isBooked(court.id, startTime);
+      const status = slotStatus(court.id, startTime); // 'paid' | 'held' | null
       const selected = isSelected(court.id, startTime);
-      const cls = booked ? 'slot booked' : (selected ? 'slot selected' : 'slot');
+      let cls, label;
+      if (status === 'paid') { cls = 'slot booked'; label = 'Booked'; }
+      else if (status === 'held') { cls = 'slot pending'; label = 'Pending payment'; }
+      else if (selected) { cls = 'slot selected'; label = ''; }
+      else { cls = 'slot'; label = ''; }
       slotsHtml += `
         <div class="${cls}" data-court="${court.id}" data-start="${startTime}" data-end="${endTime}" data-price="${price}">
           <span class="time mono">${startTime}</span>
           <span class="price mono">₱${price.toFixed(0)}</span>
+          ${label ? `<span class="status-label">${label}</span>` : ''}
         </div>`;
     }
     return `
@@ -469,7 +485,7 @@ function renderCourts() {
       </div>`;
   }).join('');
 
-  courtsContainer.querySelectorAll('.slot:not(.booked)').forEach(el => {
+  courtsContainer.querySelectorAll('.slot:not(.booked):not(.pending)').forEach(el => {
     el.addEventListener('click', () => toggleSlot(el));
   });
 }
@@ -521,11 +537,7 @@ async function doCheckout() {
   try {
     const res = await fetch(CREATE_BOOKING_URL, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-        'apikey': SUPABASE_ANON_KEY,
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         facility_id: facilitySelect.value,
         court_id: cart.courtId,
