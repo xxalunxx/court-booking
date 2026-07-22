@@ -264,8 +264,8 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 
 // ---- CONFIG: fill these in for your project ----
-const SUPABASE_URL = 'https://YOUR-PROJECT.supabase.co';
-const SUPABASE_ANON_KEY = 'YOUR-ANON-KEY';
+const SUPABASE_URL = 'https://qdayzqwkxomsfsyzjhkq.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFkYXl6cXdreG9tc2ZzeXpqaGtxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2OTI1NDcsImV4cCI6MjEwMDI2ODU0N30.BZevY-oq2-tmX0b70Q_N2dt6UlYwrom6IRe5HIeOI8o';
 const CREATE_BOOKING_URL = `${SUPABASE_URL}/functions/v1/create-booking`;
 const PAYMONGO_CREATE_SOURCE_URL = `${SUPABASE_URL}/functions/v1/paymongo-create-source`;
 const DAY_START_HOUR = 6;   // 6am
@@ -382,6 +382,42 @@ async function loadCourtsAndBookings() {
   priceRules = ruleData || [];
   existingBookings = bookingData || [];
   renderCourts();
+  subscribeToFacilityBookings(facilityId);
+}
+
+let liveBookingsChannel = null;
+
+function subscribeToFacilityBookings(facilityId) {
+  if (liveBookingsChannel) {
+    supabase.removeChannel(liveBookingsChannel);
+    liveBookingsChannel = null;
+  }
+  liveBookingsChannel = supabase
+    .channel(`facility-bookings-${facilityId}`)
+    .on('postgres_changes', {
+      event: '*',
+      schema: 'public',
+      table: 'bookings',
+      filter: `facility_id=eq.${facilityId}`,
+    }, async (payload) => {
+      const row = (payload.new && Object.keys(payload.new).length) ? payload.new : payload.old;
+      if (!row || row.booking_date !== dateInput.value) return;
+      await refreshExistingBookings();
+    })
+    .subscribe();
+}
+
+async function refreshExistingBookings() {
+  const facilityId = facilitySelect.value;
+  const date = dateInput.value;
+  const { data: bookingData } = await supabase
+    .from('bookings')
+    .select('court_id, start_time, end_time, status')
+    .eq('facility_id', facilityId)
+    .eq('booking_date', date)
+    .in('status', ['held', 'paid']);
+  existingBookings = bookingData || [];
+  renderCourts();
 }
 
 function priceForSlot(courtId, basePrice, hour) {
@@ -485,7 +521,11 @@ async function doCheckout() {
   try {
     const res = await fetch(CREATE_BOOKING_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'apikey': SUPABASE_ANON_KEY,
+      },
       body: JSON.stringify({
         facility_id: facilitySelect.value,
         court_id: cart.courtId,
