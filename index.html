@@ -267,6 +267,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 const SUPABASE_URL = 'https://qdayzqwkxomsfsyzjhkq.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFkYXl6cXdreG9tc2ZzeXpqaGtxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2OTI1NDcsImV4cCI6MjEwMDI2ODU0N30.BZevY-oq2-tmX0b70Q_N2dt6UlYwrom6IRe5HIeOI8o';
 const CREATE_BOOKING_URL = `${SUPABASE_URL}/functions/v1/create-booking`;
+const PAYMONGO_CREATE_SOURCE_URL = `${SUPABASE_URL}/functions/v1/paymongo-create-source`;
 const DAY_START_HOUR = 6;   // 6am
 const DAY_END_HOUR = 22;    // 10pm
 // --------------------------------------------------
@@ -503,7 +504,7 @@ async function doCheckout() {
       await loadCourtsAndBookings();
       return;
     }
-    openPaymentModal(result);
+    await openPaymentModal(result);
   } catch (e) {
     alert('Something went wrong creating the booking.');
     console.error(e);
@@ -513,8 +514,55 @@ async function doCheckout() {
   }
 }
 
-function openPaymentModal({ ref_code, grand_total, fee_amount, fee_passed_to_customer, payment_method }) {
+async function openPaymentModal(result) {
+  const { ref_code, grand_total, fee_amount, fee_passed_to_customer, payment_method } = result;
   const pm = payment_method;
+
+  if (pm.method_type === 'qrph_gateway') {
+    modalRoot.innerHTML = `
+      <div class="modal-overlay"><div class="modal">
+        <h2>Preparing PayMongo checkout…</h2>
+      </div></div>`;
+
+    const pmRes = await fetch(PAYMONGO_CREATE_SOURCE_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'apikey': SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify({ ref_code, amount: grand_total }),
+    });
+    const pmData = await pmRes.json();
+
+    if (!pmRes.ok || !pmData.checkout_url) {
+      modalRoot.innerHTML = `
+        <div class="modal-overlay"><div class="modal">
+          <h2>Could not start PayMongo checkout</h2>
+          <p class="sub">${pmData.error || 'Please try again.'}</p>
+          <button class="close-btn" onclick="document.getElementById('modal-root').innerHTML=''">Close</button>
+        </div></div>`;
+      return;
+    }
+
+    modalRoot.innerHTML = `
+      <div class="modal-overlay" id="modal-overlay">
+        <div class="modal">
+          <h2>Pay via ${pm.display_name}</h2>
+          <p class="ref">Reference: ${ref_code}</p>
+          <div class="amount mono">₱${grand_total.toFixed(2)}</div>
+          <p class="sub">This opens PayMongo's secure page with a real, live QR Ph code to scan.</p>
+          <button class="primary" style="margin-top:8px;" onclick="window.open('${pmData.checkout_url}', '_blank')">Open PayMongo checkout</button>
+          <div style="margin-top:14px;"><span class="status-pill waiting" id="status-pill">Waiting for payment</span></div>
+          <button class="close-btn" id="modal-close">Cancel and close</button>
+        </div>
+      </div>`;
+
+    document.getElementById('modal-close').addEventListener('click', () => { modalRoot.innerHTML = ''; });
+    subscribeToPaymentStatus(ref_code);
+    return;
+  }
+
   const lines = [
     `Pay via ${pm.display_name}`,
     pm.bank_name ? `Bank: ${pm.bank_name}` : null,
@@ -548,7 +596,10 @@ function openPaymentModal({ ref_code, grand_total, fee_amount, fee_passed_to_cus
     modalRoot.innerHTML = '';
   });
 
-  // Listen for payment confirmation in real time
+  subscribeToPaymentStatus(ref_code);
+}
+
+function subscribeToPaymentStatus(ref_code) {
   const channel = supabase
     .channel(`booking-${ref_code}`)
     .on('postgres_changes', {
