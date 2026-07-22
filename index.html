@@ -530,10 +530,7 @@ checkoutBtn.addEventListener('click', doCheckout);
 async function doCheckout() {
   if (!selectedPaymentMethodId) {
     alert('Please choose a payment method first.');
-    return;const res = await fetch(CREATE_BOOKING_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    return;
   }
   checkoutBtn.disabled = true;
   checkoutBtn.textContent = 'Creating booking…';
