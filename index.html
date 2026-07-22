@@ -483,9 +483,13 @@ async function doCheckout() {
   checkoutBtn.textContent = 'Creating booking…';
   try {
     const res = await fetch(CREATE_BOOKING_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+    'apikey': SUPABASE_ANON_KEY,
+  },
+  body: JSON.stringify({
         facility_id: facilitySelect.value,
         court_id: cart.courtId,
         booking_date: dateInput.value,
