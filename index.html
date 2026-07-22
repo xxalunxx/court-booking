@@ -530,14 +530,21 @@ checkoutBtn.addEventListener('click', doCheckout);
 async function doCheckout() {
   if (!selectedPaymentMethodId) {
     alert('Please choose a payment method first.');
-    return;
+    return;const res = await fetch(CREATE_BOOKING_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
   }
   checkoutBtn.disabled = true;
   checkoutBtn.textContent = 'Creating booking…';
   try {
     const res = await fetch(CREATE_BOOKING_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'apikey': SUPABASE_ANON_KEY,
+      },
       body: JSON.stringify({
         facility_id: facilitySelect.value,
         court_id: cart.courtId,
