@@ -1,673 +1,146 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Court booking</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
-<style>
-  :root{
-    --court-green:#123B69;
-    --court-green-light:#1F5C9E;
-    --floor-amber:#2E7BC7;
-    --floor-amber-light:#5B9BDB;
-    --chalk:#F5F9FC;
-    --ink:#132A45;
-    --ink-soft:#5A7290;
-    --booked:#8A93A6;
-    --booked-bg:#E9EDF3;
-    --danger:#B23A3A;
-    --radius:10px;
-  }
-  *{box-sizing:border-box;}
-  body{
-    margin:0;
-    background:var(--chalk);
-    color:var(--ink);
-    font-family:'Inter',sans-serif;
-  }
-  h1,h2,h3,.display{
-    font-family:'Oswald',sans-serif;
-    font-weight:600;
-    letter-spacing:0.02em;
-    text-transform:uppercase;
-    color:var(--court-green);
-  }
-  .mono{font-family:'IBM Plex Mono',monospace;}
+// Supabase Edge Function: paymongo-webhook
+// Endpoint registered in PayMongo Dashboard -> Developers -> Webhooks
+// Subscribed events (per your current setup):
+//   payment.paid, qr.paid       -> mark booking as paid
+//   qr.expired, qrph.expired    -> mark booking as expired (frees the slot)
+//   source.chargeable           -> informational only, logged but no action
+//                                   (Payment Intent capture_type "automatic"
+//                                   already handles the charge - no need to
+//                                   manually create a Payment like the older
+//                                   Sources-only flow required)
+//
+// IMPORTANT: this function must have "Enforce JWT Verification" turned OFF
+// in its Settings tab, since PayMongo calls it without a Supabase auth token.
+//
+// Required secrets (project-wide, should already be available):
+//   PAYMONGO_SECRET_KEY     <- test secret key, used for the metadata lookup fallback
+//   PAYMONGO_WEBHOOK_SECRET <- shown in PayMongo's webhook details (for future signature verification)
+//
+// NOTE: exact payload shape for qr.paid / qr.expired / qrph.expired / source.chargeable
+// hasn't been fully confirmed against live payloads yet - resolveRefCode tries several
+// common paths defensively. If any of these don't match a booking, check the
+// payment_events table's raw_payload column to see the real shape and we can
+// tighten the lookup.
 
-  header{
-    background:var(--court-green);
-    color:#fff;
-    padding:24px 20px;
-  }
-  header h1{color:#fff;font-size:22px;margin:0 0 4px;}
-  header p{margin:0;color:#CFE0D8;font-size:14px;}
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-  .controls{
-    max-width:960px;
-    margin:20px auto 0;
-    padding:0 20px;
-    display:flex;
-    gap:16px;
-    flex-wrap:wrap;
-  }
-  .field{display:flex;flex-direction:column;gap:6px;}
-  .field label{font-size:12px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.05em;}
-  select, input[type=date]{
-    padding:10px 12px;
-    border:1px solid #D3DAD5;
-    border-radius:var(--radius);
-    font-family:'Inter',sans-serif;
-    font-size:14px;
-    background:#fff;
-    color:var(--ink);
-    min-width:200px;
-  }
+async function resolveRefCode(resource: any): Promise<string | null> {
+  // 1. Direct metadata on the resource itself (works for payment.paid)
+  let refCode = resource?.attributes?.metadata?.ref_code;
+  if (refCode) return refCode;
 
-  main{
-    max-width:960px;
-    margin:24px auto 120px;
-    padding:0 20px;
-    display:flex;
-    flex-direction:column;
-    gap:20px;
-  }
+  // 2. Sometimes nested one level deeper under a linked source/intent
+  refCode = resource?.attributes?.source?.attributes?.metadata?.ref_code;
+  if (refCode) return refCode;
 
-  .court-card{
-    background:#fff;
-    border:1px solid #E0E5E1;
-    border-radius:14px;
-    padding:18px;
-  }
-  .court-card h3{font-size:16px;margin:0 0 2px;}
-  .court-card .sub{font-size:13px;color:var(--ink-soft);margin:0 0 14px;}
+  // 3. Fall back to fetching the linked Payment Intent from PayMongo's API
+  const paymentIntentId =
+    resource?.attributes?.payment_intent_id ||
+    resource?.attributes?.payment_intent ||
+    (resource?.type === "payment_intent" ? resource?.id : null) ||
+    resource?.attributes?.source?.id ||
+    resource?.attributes?.source_id ||
+    resource?.id; // last resort: maybe the resource itself IS the intent/source id
 
-  .slot-grid{
-    display:grid;
-    grid-template-columns:repeat(auto-fill,minmax(84px,1fr));
-    gap:8px;
-  }
-  .slot{
-    border-radius:8px;
-    padding:10px 6px;
-    text-align:center;
-    cursor:pointer;
-    border:1.5px solid var(--court-green-light);
-    background:#fff;
-    transition:transform .08s ease;
-  }
-  .slot:hover{transform:translateY(-1px);}
-  .slot .time{display:block;font-size:13px;font-weight:500;}
-  .slot .price{display:block;font-size:11px;color:var(--ink-soft);margin-top:2px;}
+  if (!paymentIntentId) return null;
 
-  .slot.selected{
-    background:var(--floor-amber);
-    border-color:var(--floor-amber);
-  }
-  .slot.selected .time{color:#fff;}
-  .slot.selected .price{color:#D6E8FA;}
-
-  .slot.booked{
-    cursor:not-allowed;
-    background:var(--booked-bg);
-    border-color:var(--booked-bg);
-    color:var(--booked);
-  }
-  .slot.booked .price{color:var(--booked);}
-
-  .cart-bar{
-    position:sticky;
-    bottom:0;
-    left:0;
-    right:0;
-    background:#fff;
-    border-top:1px solid #E0E5E1;
-    box-shadow:0 -2px 10px rgba(0,0,0,0.04);
-  }
-  .cart-inner{
-    max-width:960px;
-    margin:0 auto;
-    padding:14px 20px;
-    display:flex;
-    align-items:center;
-    justify-content:space-between;
-    gap:16px;
-    flex-wrap:wrap;
-  }
-  .cart-summary{font-size:14px;color:var(--ink-soft);}
-  .cart-summary strong{color:var(--ink);font-family:'IBM Plex Mono',monospace;}
-  button.primary{
-    background:var(--court-green);
-    color:#fff;
-    border:none;
-    border-radius:var(--radius);
-    padding:12px 22px;
-    font-size:14px;
-    font-weight:600;
-    cursor:pointer;
-  }
-  button.primary:disabled{background:#B7C4BE;cursor:not-allowed;}
-  button.primary:hover:not(:disabled){background:var(--court-green-light);}
-
-  .modal-overlay{
-    position:fixed;inset:0;
-    background:rgba(22,35,31,0.55);
-    display:flex;align-items:center;justify-content:center;
-    padding:20px;
-    z-index:50;
-  }
-  .modal{
-    background:#fff;
-    border-radius:14px;
-    padding:28px;
-    max-width:360px;
-    width:100%;
-    text-align:center;
-  }
-  .modal h2{font-size:18px;margin:0 0 4px;}
-  .modal .ref{font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--ink-soft);margin-bottom:16px;}
-  .modal img{width:220px;height:220px;margin:0 auto 16px;display:block;}
-  .modal .amount{font-family:'IBM Plex Mono',monospace;font-size:26px;margin:8px 0;}
-  .status-pill{
-    display:inline-block;
-    padding:6px 14px;
-    border-radius:20px;
-    font-size:12px;
-    font-weight:600;
-    text-transform:uppercase;
-    letter-spacing:0.04em;
-  }
-  .status-pill.waiting{background:#FBF0DC;color:#8A5A0B;}
-  .status-pill.paid{background:#DFF0E6;color:var(--court-green);}
-  .close-btn{
-    margin-top:18px;
-    background:none;
-    border:none;
-    color:var(--ink-soft);
-    text-decoration:underline;
-    cursor:pointer;
-    font-size:13px;
-  }
-  .empty-state{color:var(--ink-soft);font-size:14px;padding:40px 0;text-align:center;}
-
-  .pm-option{
-    display:flex;
-    align-items:center;
-    justify-content:space-between;
-    gap:12px;
-    border:1.5px solid #E0E5E1;
-    border-radius:10px;
-    padding:12px 14px;
-    cursor:pointer;
-  }
-  .pm-option.selected{border-color:var(--court-green);background:#EAF3FB;}
-  .pm-option .pm-left{display:flex;flex-direction:column;gap:2px;}
-  .pm-option .pm-name{font-size:14px;font-weight:500;}
-  .pm-option .pm-note{font-size:12px;color:var(--ink-soft);}
-  .pm-option .pm-cost{font-family:'IBM Plex Mono',monospace;font-size:14px;text-align:right;}
-  .pm-badge{
-    display:inline-block;
-    margin-left:8px;
-    background:var(--floor-amber);
-    color:#fff;
-    font-size:10px;
-    font-weight:600;
-    text-transform:uppercase;
-    letter-spacing:0.03em;
-    padding:2px 8px;
-    border-radius:10px;
-    vertical-align:middle;
-  }
-</style>
-</head>
-<body>
-
-<header>
-  <h1>Court booking</h1>
-  <p>Pick a facility, date, and timeslot. Pay by GCash, confirmed instantly.</p>
-</header>
-
-<div class="controls">
-  <div class="field">
-    <label for="facility-select">Facility</label>
-    <select id="facility-select"></select>
-  </div>
-  <div class="field">
-    <label for="date-input">Date</label>
-    <input type="date" id="date-input">
-  </div>
-</div>
-
-<main id="courts-container">
-  <div class="empty-state">Loading courts…</div>
-</main>
-
-<div id="payment-section" style="display:none;max-width:960px;margin:0 auto;padding:0 20px 24px;">
-  <div class="court-card">
-    <h3>Choose how to pay</h3>
-    <p class="sub" id="payment-headline"></p>
-    <div id="payment-methods-list" style="display:flex;flex-direction:column;gap:10px;"></div>
-  </div>
-</div>
-
-<div class="cart-bar">
-  <div class="cart-inner">
-    <div class="cart-summary" id="cart-summary">No timeslots selected yet</div>
-    <button class="primary" id="checkout-btn" disabled>Checkout</button>
-  </div>
-</div>
-
-<div id="modal-root"></div>
-
-<script type="module">
-import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-
-// ---- CONFIG: fill these in for your project ----
-const SUPABASE_URL = 'https://qdayzqwkxomsfsyzjhkq.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFkYXl6cXdreG9tc2ZzeXpqaGtxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2OTI1NDcsImV4cCI6MjEwMDI2ODU0N30.BZevY-oq2-tmX0b70Q_N2dt6UlYwrom6IRe5HIeOI8o';
-const CREATE_BOOKING_URL = `${SUPABASE_URL}/functions/v1/create-booking`;
-const PAYMONGO_CREATE_SOURCE_URL = `${SUPABASE_URL}/functions/v1/paymongo-create-source`;
-const DAY_START_HOUR = 6;   // 6am
-const DAY_END_HOUR = 22;    // 10pm
-// --------------------------------------------------
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-const facilitySelect = document.getElementById('facility-select');
-const dateInput = document.getElementById('date-input');
-const courtsContainer = document.getElementById('courts-container');
-const cartSummary = document.getElementById('cart-summary');
-const checkoutBtn = document.getElementById('checkout-btn');
-const modalRoot = document.getElementById('modal-root');
-
-let courts = [];
-let priceRules = [];
-let existingBookings = [];
-let paymentMethods = [];
-let selectedPaymentMethodId = null;
-// cart is restricted to a single court per checkout
-let cart = { courtId: null, slots: [] }; // slots: [{start_time, end_time, price}]
-
-const paymentSection = document.getElementById('payment-section');
-const paymentHeadline = document.getElementById('payment-headline');
-const paymentMethodsList = document.getElementById('payment-methods-list');
-
-function cartTotal() {
-  return cart.slots.reduce((sum, s) => sum + s.price, 0);
-}
-
-function costForMethod(pm, bookingTotal) {
-  const fee = Number(pm.fee_fixed) + bookingTotal * (Number(pm.fee_percent) / 100);
-  return pm.fee_passed_to_customer ? fee : 0; // cost the CUSTOMER actually feels
-}
-
-async function loadPaymentMethods() {
-  const { data } = await supabase
-    .from('payment_methods')
-    .select('*')
-    .eq('is_active', true)
-    .order('sort_order');
-  paymentMethods = data || [];
-  selectedPaymentMethodId = null;
-  renderPaymentMethods();
-}
-
-function renderPaymentMethods() {
-  if (!cart.slots.length || !paymentMethods.length) {
-    paymentSection.style.display = 'none';
-    return;
-  }
-  paymentSection.style.display = 'block';
-  const bookingTotal = cartTotal();
-
-  const ranked = [...paymentMethods]
-    .map(pm => ({ pm, customerCost: costForMethod(pm, bookingTotal) }))
-    .sort((a, b) => a.customerCost - b.customerCost);
-
-  const cheapestCost = ranked[0].customerCost;
-  const cheapestName = ranked[0].pm.display_name;
-
-  paymentHeadline.textContent = cheapestCost === 0
-    ? `${cheapestName} is your cheapest option — no extra fee added to your total.`
-    : `${cheapestName} is your cheapest option at this facility, adding about ₱${cheapestCost.toFixed(2)} in fees. Other methods may cost more.`;
-
-  if (!selectedPaymentMethodId) selectedPaymentMethodId = ranked[0].pm.id;
-
-  paymentMethodsList.innerHTML = ranked.map(({ pm, customerCost }, i) => {
-    const selected = pm.id === selectedPaymentMethodId;
-    const costLabel = customerCost === 0 ? 'No extra fee' : `+₱${customerCost.toFixed(2)} fee`;
-    return `
-      <div class="pm-option ${selected ? 'selected' : ''}" data-id="${pm.id}">
-        <div class="pm-left">
-          <span class="pm-name">${pm.display_name}${i === 0 ? '<span class="pm-badge">Cheapest</span>' : ''}</span>
-          <span class="pm-note">${pm.fee_note || (pm.method_type === 'bank_transfer' ? 'Your bank may apply its own transfer fee' : '')}</span>
-        </div>
-        <div class="pm-cost">${costLabel}</div>
-      </div>`;
-  }).join('');
-
-  paymentMethodsList.querySelectorAll('.pm-option').forEach(el => {
-    el.addEventListener('click', () => {
-      selectedPaymentMethodId = el.dataset.id;
-      renderPaymentMethods();
-    });
-  });
-}
-
-const todayStr = new Date().toISOString().slice(0, 10);
-dateInput.value = todayStr;
-dateInput.min = todayStr;
-
-async function loadFacilities() {
-  const { data, error } = await supabase.from('facilities').select('id, name').eq('is_active', true);
-  if (error) { console.error(error); return; }
-  facilitySelect.innerHTML = data.map(f => `<option value="${f.id}">${f.name}</option>`).join('');
-  if (data.length) loadCourtsAndBookings();
-}
-
-async function loadCourtsAndBookings() {
-  const facilityId = facilitySelect.value;
-  const date = dateInput.value;
-  cart = { courtId: null, slots: [] };
-  renderCart();
-
-  const [{ data: courtData }, { data: ruleData }, { data: bookingData }] = await Promise.all([
-    supabase.from('courts').select('id, name, sport, base_price_per_hour').eq('facility_id', facilityId).eq('is_active', true),
-    supabase.from('court_price_rules').select('court_id, day_of_week, start_hour, end_hour, price_per_hour'),
-    supabase.from('bookings').select('court_id, start_time, end_time, status').eq('facility_id', facilityId).eq('booking_date', date).in('status', ['held', 'paid']),
-  ]);
-
-  courts = courtData || [];
-  priceRules = ruleData || [];
-  existingBookings = bookingData || [];
-  renderCourts();
-  subscribeToFacilityBookings(facilityId);
-}
-
-let liveBookingsChannel = null;
-
-function subscribeToFacilityBookings(facilityId) {
-  if (liveBookingsChannel) {
-    supabase.removeChannel(liveBookingsChannel);
-    liveBookingsChannel = null;
-  }
-  liveBookingsChannel = supabase
-    .channel(`facility-bookings-${facilityId}`)
-    .on('postgres_changes', {
-      event: '*',
-      schema: 'public',
-      table: 'bookings',
-      filter: `facility_id=eq.${facilityId}`,
-    }, async (payload) => {
-      const row = (payload.new && Object.keys(payload.new).length) ? payload.new : payload.old;
-      if (!row || row.booking_date !== dateInput.value) return;
-      await refreshExistingBookings();
-    })
-    .subscribe();
-}
-
-async function refreshExistingBookings() {
-  const facilityId = facilitySelect.value;
-  const date = dateInput.value;
-  const { data: bookingData } = await supabase
-    .from('bookings')
-    .select('court_id, start_time, end_time, status')
-    .eq('facility_id', facilityId)
-    .eq('booking_date', date)
-    .in('status', ['held', 'paid']);
-  existingBookings = bookingData || [];
-  renderCourts();
-}
-
-function priceForSlot(courtId, basePrice, hour) {
-  const date = new Date(dateInput.value + 'T00:00:00');
-  const dow = date.getDay();
-  const rule = priceRules.find(r =>
-    r.court_id === courtId &&
-    (r.day_of_week === null || r.day_of_week === dow) &&
-    hour >= r.start_hour && hour < r.end_hour
-  );
-  return rule ? Number(rule.price_per_hour) : Number(basePrice);
-}
-
-function isBooked(courtId, startTime) {
-  return existingBookings.some(b =>
-    b.court_id === courtId && b.start_time.slice(0,5) === startTime
-  );
-}
-
-function isSelected(courtId, startTime) {
-  return cart.courtId === courtId && cart.slots.some(s => s.start_time === startTime);
-}
-
-function renderCourts() {
-  if (!courts.length) {
-    courtsContainer.innerHTML = '<div class="empty-state">No courts available for this facility.</div>';
-    return;
-  }
-  courtsContainer.innerHTML = courts.map(court => {
-    let slotsHtml = '';
-    for (let h = DAY_START_HOUR; h < DAY_END_HOUR; h++) {
-      const startTime = `${String(h).padStart(2,'0')}:00`;
-      const endTime = `${String(h+1).padStart(2,'0')}:00`;
-      const price = priceForSlot(court.id, court.base_price_per_hour, h);
-      const booked = isBooked(court.id, startTime);
-      const selected = isSelected(court.id, startTime);
-      const cls = booked ? 'slot booked' : (selected ? 'slot selected' : 'slot');
-      slotsHtml += `
-        <div class="${cls}" data-court="${court.id}" data-start="${startTime}" data-end="${endTime}" data-price="${price}">
-          <span class="time mono">${startTime}</span>
-          <span class="price mono">₱${price.toFixed(0)}</span>
-        </div>`;
-    }
-    return `
-      <div class="court-card">
-        <h3>${court.name}</h3>
-        <p class="sub">${court.sport ? court.sport + ' · ' : ''}₱${Number(court.base_price_per_hour).toFixed(0)}/hr base rate</p>
-        <div class="slot-grid">${slotsHtml}</div>
-      </div>`;
-  }).join('');
-
-  courtsContainer.querySelectorAll('.slot:not(.booked)').forEach(el => {
-    el.addEventListener('click', () => toggleSlot(el));
-  });
-}
-
-function toggleSlot(el) {
-  const courtId = el.dataset.court;
-  const startTime = el.dataset.start;
-  const endTime = el.dataset.end;
-  const price = Number(el.dataset.price);
-
-  if (cart.courtId && cart.courtId !== courtId && cart.slots.length) {
-    alert('You can only check out slots from one court at a time. Finish or clear your current selection first.');
-    return;
-  }
-
-  cart.courtId = courtId;
-  const idx = cart.slots.findIndex(s => s.start_time === startTime);
-  if (idx >= 0) {
-    cart.slots.splice(idx, 1);
-    if (!cart.slots.length) cart.courtId = null;
-  } else {
-    cart.slots.push({ start_time: startTime, end_time: endTime, price });
-  }
-  renderCourts();
-  renderCart();
-  renderPaymentMethods();
-}
-
-function renderCart() {
-  if (!cart.slots.length) {
-    cartSummary.textContent = 'No timeslots selected yet';
-    checkoutBtn.disabled = true;
-    return;
-  }
-  const total = cart.slots.reduce((sum, s) => sum + s.price, 0);
-  cartSummary.innerHTML = `${cart.slots.length} slot(s) selected — <strong>₱${total.toFixed(2)}</strong>`;
-  checkoutBtn.disabled = false;
-}
-
-checkoutBtn.addEventListener('click', doCheckout);
-
-async function doCheckout() {
-  if (!selectedPaymentMethodId) {
-    alert('Please choose a payment method first.');
-    return;
-  }
-  checkoutBtn.disabled = true;
-  checkoutBtn.textContent = 'Creating booking…';
   try {
-    const res = await fetch(CREATE_BOOKING_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-        'apikey': SUPABASE_ANON_KEY,
-      },
-      body: JSON.stringify({
-        facility_id: facilitySelect.value,
-        court_id: cart.courtId,
-        booking_date: dateInput.value,
-        slots: cart.slots.map(s => ({ start_time: s.start_time, end_time: s.end_time })),
-        payment_method_id: selectedPaymentMethodId,
-      }),
+    const secretKey = Deno.env.get("PAYMONGO_SECRET_KEY")!;
+    const auth = "Basic " + btoa(`${secretKey}:`);
+    const piRes = await fetch(`https://api.paymongo.com/v1/payment_intents/${paymentIntentId}`, {
+      headers: { Authorization: auth },
     });
-    const result = await res.json();
-    if (!res.ok) {
-      alert(result.error || 'Could not create booking.');
-      await loadCourtsAndBookings();
-      return;
-    }
-    await openPaymentModal(result);
-  } catch (e) {
-    alert('Something went wrong creating the booking.');
-    console.error(e);
-  } finally {
-    checkoutBtn.textContent = 'Checkout';
-    checkoutBtn.disabled = false;
+    const piData = await piRes.json();
+    return piData?.data?.attributes?.metadata?.ref_code || null;
+  } catch {
+    return null;
   }
 }
 
-async function openPaymentModal(result) {
-  const { ref_code, grand_total, fee_amount, fee_passed_to_customer, payment_method } = result;
-  const pm = payment_method;
+async function updateBookingStatus(
+  supabase: any,
+  refCode: string,
+  newStatus: "paid" | "expired",
+  source: string,
+  rawPayload: string,
+) {
+  const updateFields: Record<string, unknown> = { status: newStatus };
+  if (newStatus === "paid") updateFields.paid_at = new Date().toISOString();
 
-  if (pm.method_type === 'qrph_gateway') {
-    // Real gateway: ask PayMongo to create the actual QR Ph source
-    modalRoot.innerHTML = `
-      <div class="modal-overlay"><div class="modal">
-        <h2>Preparing PayMongo checkout…</h2>
-      </div></div>`;
+  const { data: updated, error } = await supabase
+    .from("bookings")
+    .update(updateFields)
+    .eq("ref_code", refCode)
+    .eq("status", "held") // only move rows that are still held - safe to call twice for paid+qr.paid both firing
+    .select();
 
-    const pmRes = await fetch(PAYMONGO_CREATE_SOURCE_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-        'apikey': SUPABASE_ANON_KEY,
-      },
-      body: JSON.stringify({ ref_code, amount: grand_total }),
-    });
-    const pmData = await pmRes.json();
-
-    if (!pmRes.ok || !pmData.checkout_url) {
-      modalRoot.innerHTML = `
-        <div class="modal-overlay"><div class="modal">
-          <h2>Could not start PayMongo checkout</h2>
-          <p class="sub">${pmData.error || 'Please try again.'}</p>
-          <button class="close-btn" onclick="document.getElementById('modal-root').innerHTML=''">Close</button>
-        </div></div>`;
-      return;
-    }
-
-    modalRoot.innerHTML = `
-      <div class="modal-overlay" id="modal-overlay">
-        <div class="modal">
-          <h2>Pay via ${pm.display_name}</h2>
-          <p class="ref">Reference: ${ref_code}</p>
-          <div id="paymongo-qr-holder">
-            <img src="${pmData.checkout_url}" alt="PayMongo QR Ph code" onerror="this.replaceWith(Object.assign(document.createElement('a'), {href:'${pmData.checkout_url}', target:'_blank', textContent:'Open PayMongo payment page', className:'ref'}))">
-          </div>
-          <div class="amount mono">₱${grand_total.toFixed(2)}</div>
-          <div><span class="status-pill waiting" id="status-pill">Waiting for payment</span></div>
-          <button class="close-btn" id="modal-close">Cancel and close</button>
-        </div>
-      </div>`;
-
-    document.getElementById('modal-close').addEventListener('click', () => { modalRoot.innerHTML = ''; });
-    subscribeToPaymentStatus(ref_code);
-    return;
-  }
-
-  // Non-gateway methods: build the info QR as before
-  const lines = [
-    `Pay via ${pm.display_name}`,
-    pm.bank_name ? `Bank: ${pm.bank_name}` : null,
-    `Account name: ${pm.account_name}`,
-    `Account number: ${pm.account_number}`,
-    `Ref: ${ref_code}`,
-    `Amount: PHP ${grand_total.toFixed(2)}`,
-  ].filter(Boolean).join('\n');
-
-  const qrText = encodeURIComponent(lines);
-  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=${qrText}`;
-  const feeNote = fee_passed_to_customer && fee_amount > 0
-    ? `<p class="sub" style="margin-top:-8px;">Includes ₱${fee_amount.toFixed(2)} payment processing fee</p>`
-    : '';
-
-  modalRoot.innerHTML = `
-    <div class="modal-overlay" id="modal-overlay">
-      <div class="modal">
-        <h2>Pay via ${pm.display_name}</h2>
-        <p class="ref">${pm.account_name} · ${pm.account_number}</p>
-        <p class="ref">Reference: ${ref_code}</p>
-        <img src="${qrUrl}" alt="Payment QR code with account and reference details">
-        <div class="amount mono">₱${grand_total.toFixed(2)}</div>
-        ${feeNote}
-        <div><span class="status-pill waiting" id="status-pill">Waiting for payment</span></div>
-        <button class="close-btn" id="modal-close">Cancel and close</button>
-      </div>
-    </div>`;
-
-  document.getElementById('modal-close').addEventListener('click', () => {
-    modalRoot.innerHTML = '';
+  await supabase.from("payment_events").insert({
+    source,
+    raw_payload: rawPayload,
+    detected_ref_code: refCode,
+    matched: !!(updated && updated.length),
+    matched_booking_id: updated && updated.length ? updated[0].id : null,
   });
 
-  subscribeToPaymentStatus(ref_code);
+  return { updated, error };
 }
 
-function subscribeToPaymentStatus(ref_code) {
-  const channel = supabase
-    .channel(`booking-${ref_code}`)
-    .on('postgres_changes', {
-      event: 'UPDATE',
-      schema: 'public',
-      table: 'bookings',
-      filter: `ref_code=eq.${ref_code}`,
-    }, (payload) => {
-      if (payload.new.status === 'paid') {
-        const pill = document.getElementById('status-pill');
-        if (pill) {
-          pill.textContent = 'Payment received — booking confirmed';
-          pill.className = 'status-pill paid';
-        }
-        supabase.removeChannel(channel);
-        setTimeout(async () => {
-          modalRoot.innerHTML = '';
-          await loadCourtsAndBookings();
-        }, 2500);
+async function logOnly(supabase: any, refCode: string | null, source: string, rawPayload: string) {
+  await supabase.from("payment_events").insert({
+    source,
+    raw_payload: rawPayload,
+    detected_ref_code: refCode,
+    matched: false,
+  });
+}
+
+const PAID_EVENTS = ["payment.paid", "qr.paid"];
+const EXPIRED_EVENTS = ["qr.expired", "qrph.expired"];
+
+Deno.serve(async (req) => {
+  try {
+    const rawBody = await req.text();
+    const event = JSON.parse(rawBody);
+
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    );
+
+    const eventType = event.data?.attributes?.type;
+    const resource = event.data?.attributes?.data;
+
+    if (PAID_EVENTS.includes(eventType)) {
+      const refCode = await resolveRefCode(resource);
+      if (!refCode) {
+        await logOnly(supabase, null, "paymongo_webhook", rawBody);
+        return new Response(JSON.stringify({ received: true, warning: "No ref_code found for " + eventType }), { status: 200 });
       }
-    })
-    .subscribe();
-}
+      const { updated, error } = await updateBookingStatus(supabase, refCode, "paid", "paymongo_webhook", rawBody);
+      if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+      return new Response(JSON.stringify({ received: true, event: eventType, updated: updated?.length || 0 }), { status: 200 });
+    }
 
-facilitySelect.addEventListener('change', loadCourtsAndBookings);
-dateInput.addEventListener('change', loadCourtsAndBookings);
+    if (EXPIRED_EVENTS.includes(eventType)) {
+      const refCode = await resolveRefCode(resource);
+      if (!refCode) {
+        await logOnly(supabase, null, "paymongo_webhook", rawBody);
+        return new Response(JSON.stringify({ received: true, warning: "No ref_code found for " + eventType }), { status: 200 });
+      }
+      const { updated, error } = await updateBookingStatus(supabase, refCode, "expired", "paymongo_webhook", rawBody);
+      if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+      return new Response(JSON.stringify({ received: true, event: eventType, expired: updated?.length || 0 }), { status: 200 });
+    }
 
-loadFacilities();
-loadPaymentMethods();
-</script>
-</body>
-</html>
+    if (eventType === "source.chargeable") {
+      // Informational only - Payment Intent auto-capture handles the charge.
+      const refCode = await resolveRefCode(resource);
+      await logOnly(supabase, refCode, "paymongo_webhook", rawBody);
+      return new Response(JSON.stringify({ received: true, event: eventType, action: "logged_only" }), { status: 200 });
+    }
+
+    return new Response(JSON.stringify({ received: true, ignored: eventType }), { status: 200 });
+  } catch (e) {
+    return new Response(JSON.stringify({ error: String(e) }), { status: 500 });
+  }
+});
