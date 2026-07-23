@@ -314,11 +314,12 @@
 <div style="max-width:960px;margin:0 auto;padding:0 20px 24px;">
   <div class="court-card">
     <h3>Manage a booking</h3>
-    <p class="sub">Enter your reference code to cancel. 50% refund if cancelled 2+ hours before your slot; no refund within 2 hours.</p>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+    <p class="sub">Enter your reference code and the email or phone used at booking. 50% refund if cancelled 2+ hours before your slot; no refund within 2 hours.</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
       <input type="text" id="manage-ref-code" placeholder="e.g. BK-XXXX" style="flex:1;min-width:160px;padding:10px 12px;border:1px solid #D3DAD5;border-radius:10px;font-family:'IBM Plex Mono',monospace;text-transform:uppercase;">
-      <button class="primary" id="cancel-booking-btn">Cancel Booking</button>
+      <input type="text" id="manage-verify" placeholder="Email or phone used at booking" style="flex:1;min-width:160px;padding:10px 12px;border:1px solid #D3DAD5;border-radius:10px;">
     </div>
+    <button class="primary" id="cancel-booking-btn">Cancel Booking</button>
     <div id="cancel-result" style="margin-top:12px;font-size:13px;"></div>
   </div>
 </div>
@@ -813,7 +814,7 @@ document.getElementById('cancel-booking-btn').addEventListener('click', async ()
         'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
         'apikey': SUPABASE_ANON_KEY,
       },
-      body: JSON.stringify({ ref_code: refCode }),
+      body: JSON.stringify({ ref_code: refCode, verify: document.getElementById('manage-verify').value.trim() }),
     });
     const data = await res.json();
     if (!res.ok) {
