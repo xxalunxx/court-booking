@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Owner Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --navy:#123B69; --navy-light:#1F5C9E; --accent:#B7242B;
+    --bg:#F5F9FC; --ink:#132A45; --ink-soft:#5A7290;
+    --ok:#1F7A4D; --warn:#B3862B; --radius:10px;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:'Inter',sans-serif;}
+  h1,h2,h3{font-family:'Oswald',sans-serif;font-weight:600;color:var(--navy);margin:0;}
+  .mono{font-family:'IBM Plex Mono',monospace;}
+
+  header{background:var(--navy);color:#fff;padding:20px;}
+  header h1{color:#fff;font-size:20px;}
+  header p{margin:4px 0 0;color:#B9C7DB;font-size:13px;}
+
+  .wrap{max-width:960px;margin:0 auto;padding:24px 20px 60px;}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:24px;}
+  .card{background:#fff;border:1px solid #E0E5E1;border-radius:14px;padding:20px;}
+  .card h3{font-size:13px;text-transform:uppercase;letter-spacing:0.04em;color:var(--ink-soft);margin-bottom:8px;}
+  .card .big{font-family:'IBM Plex Mono',monospace;font-size:28px;font-weight:600;color:var(--navy);}
+
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th{text-align:left;color:var(--ink-soft);text-transform:uppercase;font-size:11px;letter-spacing:0.03em;padding:8px 6px;border-bottom:1px solid #E0E5E1;}
+  td{padding:8px 6px;border-bottom:1px solid #F0F3F7;}
+  .status-pill{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;text-transform:uppercase;}
+  .status-paid{background:#DFF0E6;color:var(--ok);}
+  .status-held{background:#FBF0DC;color:var(--warn);}
+
+  .section{margin-bottom:32px;}
+  .section h2{font-size:16px;margin-bottom:12px;}
+  .empty{color:var(--ink-soft);font-size:13px;padding:16px 0;}
+
+  #login-screen{max-width:360px;margin:80px auto;padding:0 20px;text-align:center;}
+  #login-screen input{width:100%;padding:10px 12px;border:1px solid #D3DAD5;border-radius:8px;font-size:14px;margin-top:12px;}
+  #login-screen button{margin-top:14px;width:100%;padding:10px;background:var(--navy);color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;}
+  #login-error{color:var(--accent);font-size:13px;margin-top:8px;}
+</style>
+</head>
+<body>
+
+<div id="login-screen">
+  <h2>Owner Dashboard</h2>
+  <p style="color:var(--ink-soft);font-size:14px;">Enter your dashboard key to continue.</p>
+  <input type="password" id="key-input" placeholder="Dashboard key">
+  <button id="login-btn">View Dashboard</button>
+  <div id="login-error"></div>
+</div>
+
+<div id="dashboard-root" style="display:none;">
+  <header>
+    <h1 id="business-name">Dashboard</h1>
+    <p id="today-date"></p>
+  </header>
+  <div class="wrap">
+
+    <div class="grid">
+      <div class="card">
+        <h3>Today's Revenue</h3>
+        <div class="big" id="today-revenue">₱0</div>
+      </div>
+      <div class="card">
+        <h3>Today's Bookings</h3>
+        <div class="big" id="today-count">0</div>
+      </div>
+      <div class="card">
+        <h3>Recent Hold Abandonment</h3>
+        <div class="big" id="abandonment-rate">-</div>
+      </div>
+      <div class="card">
+        <h3>Refunds Needing Action</h3>
+        <div class="big" id="manual-refund-count">0</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Today's Schedule</h2>
+      <div id="today-table-holder" class="empty">Loading…</div>
+    </div>
+
+    <div class="section">
+      <h2>Payment Method Split</h2>
+      <div id="payment-split-holder" class="empty">Loading…</div>
+    </div>
+
+    <div class="section">
+      <h2>Refunds Needing Manual Action</h2>
+      <div id="refunds-holder" class="empty">Loading…</div>
+    </div>
+
+  </div>
+</div>
+
+<script type="module">
+// ---- CONFIG ----
+const SUPABASE_URL = 'https://qdayzqwkxomsfsyzjhkq.supabase.co';
+const DASHBOARD_DATA_URL = `${SUPABASE_URL}/functions/v1/dashboard-data`;
+// -----------------
+
+const loginScreen = document.getElementById('login-screen');
+const dashboardRoot = document.getElementById('dashboard-root');
+const keyInput = document.getElementById('key-input');
+const loginBtn = document.getElementById('login-btn');
+const loginError = document.getElementById('login-error');
+
+const STORAGE_KEY = 'dashboard_key';
+
+async function fetchDashboard(key) {
+  const res = await fetch(DASHBOARD_DATA_URL, { headers: { 'x-dashboard-key': key } });
+  if (!res.ok) throw new Error('Invalid key or server error');
+  return res.json();
+}
+
+function renderDashboard(data) {
+  document.getElementById('business-name').textContent = data.business_name || 'Dashboard';
+  document.getElementById('today-date').textContent = data.today.date;
+  document.getElementById('today-revenue').textContent = `₱${Number(data.today.revenue).toFixed(2)}`;
+  document.getElementById('today-count').textContent = data.today.bookings.length;
+
+  const latestAbandonment = data.hold_abandonment[0];
+  document.getElementById('abandonment-rate').textContent = latestAbandonment
+    ? `${latestAbandonment.abandonment_rate_pct ?? 0}%`
+    : '0%';
+
+  document.getElementById('manual-refund-count').textContent = data.needs_manual_refund.length;
+
+  // Today's schedule table
+  const todayHolder = document.getElementById('today-table-holder');
+  if (!data.today.bookings.length) {
+    todayHolder.innerHTML = '<div class="empty">No bookings today yet.</div>';
+  } else {
+    todayHolder.innerHTML = `
+      <table>
+        <thead><tr><th>Time</th><th>Court</th><th>Customer</th><th>Status</th><th>Amount</th></tr></thead>
+        <tbody>
+          ${data.today.bookings.map(b => `
+            <tr>
+              <td class="mono">${b.start_time.slice(0,5)}-${b.end_time.slice(0,5)}</td>
+              <td>${b.courts?.name || '-'}</td>
+              <td>${b.customer_name || '-'}${b.customer_phone ? ' · ' + b.customer_phone : ''}</td>
+              <td><span class="status-pill status-${b.status}">${b.status}</span></td>
+              <td class="mono">₱${Number(b.grand_total).toFixed(2)}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+  }
+
+  // Payment method split table
+  const splitHolder = document.getElementById('payment-split-holder');
+  if (!data.payment_method_split.length) {
+    splitHolder.innerHTML = '<div class="empty">No paid bookings yet.</div>';
+  } else {
+    splitHolder.innerHTML = `
+      <table>
+        <thead><tr><th>Method</th><th>Bookings</th><th>Revenue</th></tr></thead>
+        <tbody>
+          ${data.payment_method_split.map(p => `
+            <tr>
+              <td>${p.display_name}</td>
+              <td class="mono">${p.booking_count}</td>
+              <td class="mono">₱${Number(p.total_revenue).toFixed(2)}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+  }
+
+  // Manual refunds table
+  const refundsHolder = document.getElementById('refunds-holder');
+  if (!data.needs_manual_refund.length) {
+    refundsHolder.innerHTML = '<div class="empty">Nothing needs attention right now.</div>';
+  } else {
+    refundsHolder.innerHTML = `
+      <table>
+        <thead><tr><th>Ref Code</th><th>Customer</th><th>Refund Owed</th><th>Cancelled At</th></tr></thead>
+        <tbody>
+          ${data.needs_manual_refund.map(r => `
+            <tr>
+              <td class="mono">${r.ref_code}</td>
+              <td>${r.customer_name || '-'}${r.customer_phone ? ' · ' + r.customer_phone : ''}</td>
+              <td class="mono">₱${Number(r.refund_amount).toFixed(2)}</td>
+              <td>${new Date(r.cancelled_at).toLocaleString()}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+  }
+}
+
+async function tryLogin(key) {
+  try {
+    const data = await fetchDashboard(key);
+    localStorage.setItem(STORAGE_KEY, key);
+    loginScreen.style.display = 'none';
+    dashboardRoot.style.display = 'block';
+    renderDashboard(data);
+  } catch (e) {
+    loginError.textContent = 'Invalid dashboard key. Please try again.';
+  }
+}
+
+loginBtn.addEventListener('click', () => tryLogin(keyInput.value.trim()));
+keyInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryLogin(keyInput.value.trim()); });
+
+const savedKey = localStorage.getItem(STORAGE_KEY);
+if (savedKey) tryLogin(savedKey);
+</script>
+</body>
+</html>
