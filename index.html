@@ -31,6 +31,45 @@
     color:var(--primary);
   }
 
+  nav{
+    background:#fff;
+    border-bottom:1px solid #E3E8F0;
+    position:sticky;
+    top:0;
+    z-index:10;
+  }
+  .nav-inner{
+    max-width:960px;
+    margin:0 auto;
+    padding:14px 20px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+  }
+  .nav-brand{
+    font-family:'Oswald',sans-serif;
+    font-weight:600;
+    color:var(--primary);
+    font-size:16px;
+    text-decoration:none;
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  .nav-brand .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);}
+  .nav-links{display:flex;gap:4px;}
+  .nav-links a{
+    color:var(--ink-soft);
+    text-decoration:none;
+    font-size:14px;
+    font-weight:500;
+    padding:8px 14px;
+    border-radius:8px;
+    transition:background .12s ease, color .12s ease;
+  }
+  .nav-links a:hover{background:var(--bg);color:var(--ink);}
+  .nav-links a.active{color:var(--primary);background:#EEF2FB;}
+
   header{
     background:var(--primary);
     color:#fff;
@@ -108,6 +147,17 @@
 </style>
 </head>
 <body>
+
+<nav>
+  <div class="nav-inner">
+    <a href="/" class="nav-brand"><span class="dot"></span>[Your Company Name]</a>
+    <div class="nav-links">
+      <a href="/" class="active">Home</a>
+      <a href="/pricing.html">Pricing</a>
+      <a href="/dashboard/">Dashboard</a>
+    </div>
+  </div>
+</nav>
 
 <header>
   <div class="logo-placeholder">CB</div>
