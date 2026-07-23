@@ -295,11 +295,31 @@
   <div class="empty-state">Loading courts…</div>
 </main>
 
+<div id="customer-details-section" style="display:none;max-width:960px;margin:0 auto;padding:0 20px 24px;">
+  <div class="court-card">
+    <h3>Your details</h3>
+    <p class="sub">Optional - add your email to get a booking confirmation</p>
+    <input type="email" id="customer-email" placeholder="you@example.com" style="width:100%;padding:10px 12px;border:1px solid #D3DAD5;border-radius:10px;font-size:14px;font-family:'Inter',sans-serif;">
+  </div>
+</div>
+
 <div id="payment-section" style="display:none;max-width:960px;margin:0 auto;padding:0 20px 24px;">
   <div class="court-card">
     <h3>Choose how to pay</h3>
     <p class="sub" id="payment-headline"></p>
     <div id="payment-methods-list" style="display:flex;flex-direction:column;gap:10px;"></div>
+  </div>
+</div>
+
+<div style="max-width:960px;margin:0 auto;padding:0 20px 24px;">
+  <div class="court-card">
+    <h3>Manage a booking</h3>
+    <p class="sub">Enter your reference code to cancel. 50% refund if cancelled 2+ hours before your slot; no refund within 2 hours.</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      <input type="text" id="manage-ref-code" placeholder="e.g. BK-XXXX" style="flex:1;min-width:160px;padding:10px 12px;border:1px solid #D3DAD5;border-radius:10px;font-family:'IBM Plex Mono',monospace;text-transform:uppercase;">
+      <button class="primary" id="cancel-booking-btn">Cancel Booking</button>
+    </div>
+    <div id="cancel-result" style="margin-top:12px;font-size:13px;"></div>
   </div>
 </div>
 
@@ -325,6 +345,7 @@ const SUPABASE_URL = 'https://qdayzqwkxomsfsyzjhkq.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFkYXl6cXdreG9tc2ZzeXpqaGtxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2OTI1NDcsImV4cCI6MjEwMDI2ODU0N30.BZevY-oq2-tmX0b70Q_N2dt6UlYwrom6IRe5HIeOI8o';
 const CREATE_BOOKING_URL = `${SUPABASE_URL}/functions/v1/create-booking`;
 const PAYMONGO_CREATE_SOURCE_URL = `${SUPABASE_URL}/functions/v1/paymongo-create-source`;
+const CANCEL_BOOKING_URL = `${SUPABASE_URL}/functions/v1/cancel-booking`;
 const DAY_START_HOUR = 6;   // 6am
 const DAY_END_HOUR = 22;    // 10pm
 // --------------------------------------------------
@@ -354,6 +375,7 @@ let selectedPaymentMethodId = null;
 let cart = { courtId: null, slots: [] }; // slots: [{start_time, end_time, price}]
 
 const paymentSection = document.getElementById('payment-section');
+const customerDetailsSection = document.getElementById('customer-details-section');
 const paymentHeadline = document.getElementById('payment-headline');
 const paymentMethodsList = document.getElementById('payment-methods-list');
 
@@ -380,9 +402,11 @@ async function loadPaymentMethods() {
 function renderPaymentMethods() {
   if (!cart.slots.length || !paymentMethods.length) {
     paymentSection.style.display = 'none';
+    customerDetailsSection.style.display = 'none';
     return;
   }
   paymentSection.style.display = 'block';
+  customerDetailsSection.style.display = 'block';
   const bookingTotal = cartTotal();
 
   const ranked = [...paymentMethods]
@@ -638,6 +662,7 @@ async function doCheckout() {
         booking_date: selectedDate,
         slots: cart.slots.map(s => ({ start_time: s.start_time, end_time: s.end_time })),
         payment_method_id: selectedPaymentMethodId,
+        customer_email: document.getElementById('customer-email').value.trim() || null,
       }),
     });
     const result = await res.json();
@@ -771,6 +796,40 @@ function subscribeToPaymentStatus(ref_code) {
 
 loadFacility();
 loadPaymentMethods();
+
+document.getElementById('cancel-booking-btn').addEventListener('click', async () => {
+  const refCode = document.getElementById('manage-ref-code').value.trim().toUpperCase();
+  const resultEl = document.getElementById('cancel-result');
+  if (!refCode) {
+    resultEl.innerHTML = '<span style="color:var(--danger);">Please enter a reference code.</span>';
+    return;
+  }
+  resultEl.textContent = 'Cancelling…';
+  try {
+    const res = await fetch(CANCEL_BOOKING_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'apikey': SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify({ ref_code: refCode }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      resultEl.innerHTML = `<span style="color:var(--danger);">${data.error || 'Could not cancel this booking.'}</span>`;
+      return;
+    }
+    if (data.eligible_for_refund) {
+      resultEl.innerHTML = `<span style="color:var(--court-green);">Cancelled. A 50% refund of ₱${data.refund_amount.toFixed(2)} will be processed.</span>`;
+    } else {
+      resultEl.innerHTML = `<span style="color:var(--ink-soft);">Cancelled. This was within 2 hours of your slot, so no refund applies.</span>`;
+    }
+    await loadCourtsAndBookings();
+  } catch (e) {
+    resultEl.innerHTML = '<span style="color:var(--danger);">Something went wrong. Please try again.</span>';
+  }
+});
 </script>
 </body>
 </html>
